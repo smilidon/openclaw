@@ -13,6 +13,7 @@ import { JsonFileReadError, readJson, readJsonIfExists, writeJson } from "./json
 import type { ParsedRegistryNpmSpec } from "./npm-registry-spec.js";
 import { resolveOpenClawPackageRootSync } from "./openclaw-root.js";
 import { createSafeNpmInstallArgs, createSafeNpmInstallEnv } from "./safe-package-install.js";
+import { UPDATE_NETWORK_TIMEOUT_MS } from "./update-network-budget.js";
 
 // Managed npm roots are private package roots used for installed plugins. This
 // module owns package.json dependency/override edits and peer repair helpers.
@@ -843,7 +844,7 @@ async function collectNpmResolvedManagedNpmRootPeerDependencyPins(params: {
     const npmPeerPlanArgs = createManagedNpmPeerPlanArgs({ force: true });
     const npmPlanOptions = {
       cwd: tempRoot,
-      timeoutMs: Math.max(params.timeoutMs ?? 300_000, 300_000),
+      timeoutMs: params.timeoutMs ?? UPDATE_NETWORK_TIMEOUT_MS,
       signal: params.signal,
       killProcessTree: true,
       env: createSafeNpmInstallEnv(process.env, {
