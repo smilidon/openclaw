@@ -375,11 +375,11 @@ describe("update candidate canary", () => {
       });
       expect(result.status).toBe("ok");
       expect(result.steps).toContainEqual(
-        expect.objectContaining({ name: "candidate gateway canary", exitCode: 0 }),
+        expect.objectContaining({ name: "Checking Gateway startup", exitCode: 0 }),
       );
       expect(result.steps).toContainEqual(
         expect.objectContaining({
-          name: "candidate rehearsal cleanup",
+          name: "Removing temporary update files",
           advisory: expect.objectContaining({
             message: expect.stringContaining("synthetic cleanup permission denied"),
           }),
@@ -439,10 +439,9 @@ describe("update candidate canary", () => {
     expect(result).not.toHaveProperty("checkpointContinuation");
     expect(result.steps).toEqual([
       expect.objectContaining({
-        name: "candidate migration continuation",
+        name: "Checking update recovery",
         exitCode: null,
-        stdoutTail:
-          "candidate predates the migration-continuation contract; finalization runs in the current binary",
+        stdoutTail: "This version uses the current updater to finish installation",
       }),
     ]);
     expect(onStep).toHaveBeenCalledWith(result.steps[0]);
@@ -500,12 +499,12 @@ describe("update candidate canary", () => {
     expect(result.candidateSchemaVersions).toEqual({ state: 2, agent: 3 });
     expect(result).not.toHaveProperty("checkpointContinuation");
     expect(result.steps.map((step) => step.name)).toEqual([
-      "candidate migration rehearsal",
-      "candidate doctor lint",
-      "candidate config validation",
-      "candidate plugin resolution",
-      "candidate migration continuation",
-      "candidate gateway canary",
+      "Checking data migrations",
+      "Checking update health",
+      "Checking configuration",
+      "Checking plugins",
+      "Checking update recovery",
+      "Checking Gateway startup",
     ]);
     expect(completed.map((step) => step.name)).toEqual(result.steps.map((step) => step.name));
     expect(completed.map((step) => step.argv.slice(1, 3))).toEqual([
@@ -655,7 +654,7 @@ describe("update candidate canary", () => {
       expect(result.status).toBe("error");
       expect(result.phase).toBe(failure);
       if (failure === "readiness") {
-        expect(result.steps.at(-1)?.name).toBe("candidate gateway canary");
+        expect(result.steps.at(-1)?.name).toBe("Checking Gateway startup");
       }
       expect(result.steps.some((step) => step.exitCode !== 0)).toBe(true);
       expect(result.logTail.length).toBeLessThanOrEqual(40);
@@ -673,6 +672,45 @@ describe("update candidate canary", () => {
       });
     },
   );
+
+  it("reports the health failure without replaying earlier migration output", async () => {
+    const cause =
+      "Configured runtime plugin is missing. Run openclaw plugins install example-plugin.";
+    const baseSpawn = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((command, args: string[], options) => {
+      if (!args.includes("doctor")) {
+        return baseSpawn(command, args, options);
+      }
+      const child = new FakeChild(nextPid++);
+      queueMicrotask(() => {
+        if (args.includes("--lint")) {
+          child.stdout.write(
+            JSON.stringify({ ok: false, error: { type: "cli_error", message: cause } }),
+          );
+          child.stderr.write(`[openclaw] Reason: ${cause}\n[openclaw] Help: openclaw --help\n`);
+          child.emit("close", 1);
+        } else {
+          child.stdout.write("Earlier successful migration output\n");
+          child.emit("close", 0);
+        }
+      });
+      return child;
+    });
+    const result = await validateUpdateCandidateCanary({
+      root,
+      stateDir: root,
+      config: {},
+      env: {},
+      timeoutMs: 3000,
+    });
+    expect(result).toMatchObject({ status: "error", reason: "doctor-failed" });
+    expect(result.steps.at(-1)).toMatchObject({
+      name: "Checking update health",
+      failureSummary: cause,
+    });
+    expect(result.steps.at(-1)?.stderrTail).not.toContain("Earlier successful migration output");
+    expect(result.logTail.join("\n")).not.toContain("Candidate lint failed");
+  });
 
   it("refuses a candidate that cannot keep Doctor away from managed services", async () => {
     await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.4.1" }));
@@ -721,7 +759,7 @@ describe("update candidate canary", () => {
     });
     expect(result).toMatchObject({ status: "error", phase: "runtime" });
     expect(result.steps.at(-1)).toMatchObject({
-      name: "candidate migration continuation",
+      name: "Checking update recovery",
       exitCode: 1,
     });
     expect(mocks.spawn.mock.calls.some(([, args]) => args.includes("--update-canary"))).toBe(false);
