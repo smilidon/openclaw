@@ -196,6 +196,7 @@ export function createManagedServiceManagerBoundary({
         runId: run?.runId,
         ...(options?.beforeParkNotice ? { beforePark: async () => {} } : {}),
         root,
+        timeoutMs: options?.recoveryTimeoutMs,
         restartDrainTimeoutMs: 300_000,
         parentPid,
         invocationCwd,

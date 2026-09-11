@@ -52,6 +52,7 @@ export async function inspectActivatedUpdateState(
     config: OpenClawConfig;
     env: NodeJS.ProcessEnv;
     candidateSchemaVersions?: OpenClawSchemaVersions;
+    timeoutMs?: number;
   },
 ): Promise<FinishUpdateParams["rollbackBlockedReason"]> {
   const { result, root, schemaVersions, candidateSchemaVersions, env, config } = params;
@@ -65,6 +66,7 @@ export async function inspectActivatedUpdateState(
       env,
       root: result.root ?? null,
       nodeRunner: params.packageUpdateNodeRunner,
+      timeoutMs: params.timeoutMs,
     });
     const shared = current.find((entry) => entry.path === resolveOpenClawStateSqlitePath(env));
     const sharedVersion = shared ? resolveUpdateStateContentVersion(shared) : undefined;

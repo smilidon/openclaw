@@ -1,6 +1,7 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveGatewayRestartLogPath } from "../../daemon/restart-logs.js";
 import { resolveGatewayService } from "../../daemon/service.js";
+import { STARTUP_MIGRATION_LEASE_TTL_MS } from "../../infra/startup-migration-checkpoint.js";
 import type { UpdateRepairValidation } from "../../infra/update-repair-protocol.js";
 import { recordUpdateRunStep, recordUpdateRunVerification } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -62,30 +63,12 @@ export function recordUpdateGatewayHealth(
   );
 }
 
-/** Verify core activation while preserving plugin failures as separate notices. */
-export async function verifyUpdatedGateway(params: {
-  result: UpdateRunResult;
+/** Keep readiness proof and its live authority bound to the original admission. */
+export function captureUpdateGatewayReadinessOwner(params: {
   opts: UpdateCommandOptions;
-  serviceEnv: NodeJS.ProcessEnv;
-  gatewayPort: number;
-  timeoutMs?: number;
-  nodeRunner?: string;
-  expectedVersion?: string;
-  expectedBuildId?: string;
-  requireRunningService?: boolean;
-  health?: GatewayRestartSnapshot;
   signal?: AbortSignal;
   assertCurrent?: () => void;
-  onVerified?: (verifiedAtMs: number) => void;
-  recoverHealth?: (
-    health: GatewayRestartSnapshot,
-    reinspect: () => Promise<GatewayRestartSnapshot>,
-  ) => Promise<{
-    health: GatewayRestartSnapshot;
-    launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null;
-  }>;
-}): Promise<UpdateRepairValidation & { pluginWarnings?: PluginUpdateWarning[] }> {
-  // Readiness belongs to the original live executor through every awaited probe.
+}) {
   const originalRun = params.opts.run;
   const originalExecutor = originalRun?.executorFence;
   const originalRecovery = params.opts.recovery;
@@ -101,7 +84,9 @@ export async function verifyUpdatedGateway(params: {
       originalRun?.executorFence !== originalExecutor ||
       params.opts.recovery !== originalRecovery
     ) {
-      throw new UpdateCommandRecoveryPendingError("Readiness observation lost its admitted owner.");
+      throw new UpdateCommandRecoveryPendingError(
+        "Readiness observation lost its original executor.",
+      );
     }
     originalExecutor?.assertCurrent();
     if (originalRecovery) {
@@ -109,6 +94,43 @@ export async function verifyUpdatedGateway(params: {
         "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
       );
     }
+  };
+  return { proofOptions, assertCurrent };
+}
+
+type UpdateGatewayReadinessParams = {
+  serviceEnv: NodeJS.ProcessEnv;
+  gatewayPort: number;
+  timeoutMs?: number;
+  observedStartupMs?: number;
+  expectedVersion?: string;
+  expectedBuildId?: string;
+  requireRunningService?: boolean;
+  health?: GatewayRestartSnapshot;
+  settle?: { probes: number };
+  signal?: AbortSignal;
+  assertCurrent?: () => void;
+  recoverHealth?: (
+    health: GatewayRestartSnapshot,
+    reinspect: () => Promise<GatewayRestartSnapshot>,
+  ) => Promise<{
+    health: GatewayRestartSnapshot;
+    launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null;
+  }>;
+};
+
+/** Observe one ready generation before activation or after restart, without recording a verdict. */
+export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadinessParams) {
+  // The canary measures this host's startup; leave tenfold IO headroom without shortening
+  // the existing startup watchdog or overriding an operator's explicit allowance.
+  const timeoutMs =
+    params.timeoutMs ??
+    Math.max(STARTUP_MIGRATION_LEASE_TTL_MS, (params.observedStartupMs ?? 0) * 10);
+  const startedAtMs = performance.now();
+  const remainingMs = () => Math.max(0, timeoutMs - (performance.now() - startedAtMs));
+  const assertCurrent = () => {
+    params.signal?.throwIfAborted();
+    params.assertCurrent?.();
   };
   assertCurrent();
   const service = resolveGatewayService();
@@ -130,9 +152,9 @@ export async function verifyUpdatedGateway(params: {
     assertCurrent();
     const health = await waitForGatewayHealthyRestart({
       ...probeParams,
-      timeoutMs: params.timeoutMs,
+      timeoutMs: Math.max(1, remainingMs()),
       requireRunningService: params.requireRunningService,
-      settle: { probes: 12 },
+      settle: params.settle ?? { probes: 12 },
       supervisorKeepsAlive,
     });
     assertCurrent();
@@ -144,13 +166,25 @@ export async function verifyUpdatedGateway(params: {
     ({ health, launchAgentRecovery } = await params.recoverHealth(health, waitForHealthy));
     assertCurrent();
   }
+  if (
+    !health.healthy &&
+    ((health.waitOutcome !== undefined && health.waitOutcome !== "healthy") ||
+      health.versionMismatch ||
+      health.buildIdMismatch ||
+      health.activatedPluginErrors?.length ||
+      health.channelProbeErrors?.length ||
+      health.staleGatewayPids.length > 0)
+  ) {
+    return { health, readyz: false, launchAgentRecovery };
+  }
   const context = await resolveGatewayRestartProbeContext(params.serviceEnv);
   assertCurrent();
   const http = await waitForGatewayHttpReadiness({
     config: context.config,
     port: params.gatewayPort,
-    attempts: 3,
-    deadlineAt: Date.now() + 10_000,
+    attempts: Math.ceil(remainingMs() / 500),
+    deadlineAt: Date.now() + remainingMs(),
+    probeTimeoutMs: remainingMs(),
     delayMs: 500,
     ...(params.signal ? { signal: params.signal } : {}),
   });
@@ -163,13 +197,17 @@ export async function verifyUpdatedGateway(params: {
   ) {
     // HTTP readiness cannot transfer an earlier settle to a replacement boot.
     const settled = health;
-    const inspected = await inspectGatewayRestart({ ...probeParams, probeContext: context });
+    const inspect = () =>
+      inspectGatewayRestart({
+        ...probeParams,
+        probeContext: context,
+        timeoutMs: Math.max(1, remainingMs()),
+      });
+    const inspected = await inspect();
     assertCurrent();
     // Bracket the final native observation with health/hello probes so a same-PID
     // or PID-less reboot during that observation cannot inherit the old boot.
-    health = inspected.healthy
-      ? await inspectGatewayRestart({ ...probeParams, probeContext: context })
-      : inspected;
+    health = inspected.healthy ? await inspect() : inspected;
     assertCurrent();
     const sameGeneration =
       isSameGatewayRestartGeneration(settled, inspected) &&
@@ -179,6 +217,26 @@ export async function verifyUpdatedGateway(params: {
       health.probeError = "Gateway process changed during final readiness verification.";
     }
   }
+  if (remainingMs() === 0) {
+    health = { ...health, healthy: false, waitOutcome: "timeout" };
+  }
+  return { health, readyz, launchAgentRecovery };
+}
+
+/** Verify core activation while preserving plugin failures as separate notices. */
+export async function verifyUpdatedGateway(
+  params: UpdateGatewayReadinessParams & {
+    result: UpdateRunResult;
+    opts: UpdateCommandOptions;
+    nodeRunner?: string;
+    onVerified?: (verifiedAtMs: number) => void;
+  },
+): Promise<UpdateRepairValidation & { pluginWarnings?: PluginUpdateWarning[] }> {
+  const { proofOptions, assertCurrent } = captureUpdateGatewayReadinessOwner(params);
+  const { health, readyz, launchAgentRecovery } = await observeUpdateGatewayReadiness({
+    ...params,
+    assertCurrent,
+  });
   if (launchAgentRecovery?.attempted) {
     defaultRuntime.error(
       launchAgentRecovery.recovered ? launchAgentRecovery.message : launchAgentRecovery.detail,

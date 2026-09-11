@@ -13,7 +13,7 @@ import {
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 
 const SQLITE_READONLY_STDERR_TAIL_CHARS = 4_000;
-const SQLITE_INSPECTION_TIMEOUT_MS = 30_000;
+export const SQLITE_INSPECTION_TIMEOUT_MS = 30_000;
 const SQLITE_INSPECTION_TIMEOUT_MAX_MS = 30 * 60_000;
 export const SQLITE_INSPECTION_BYTES_PER_SECOND = 32 * 1024 * 1024;
 const log = createSubsystemLogger("state/sqlite");

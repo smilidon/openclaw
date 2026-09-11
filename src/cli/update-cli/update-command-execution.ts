@@ -3,7 +3,6 @@ import { readConfigFileSnapshot } from "../../config/config.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
-import { resolveGatewayService } from "../../daemon/service.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { tryReadJson } from "../../infra/json-files.js";
@@ -25,10 +24,6 @@ import {
   type OpenClawSchemaVersions,
 } from "../../state/openclaw-schema-versions.js";
 import { formatCliCommand } from "../command-format.js";
-import {
-  inspectGatewayRestart,
-  waitForGatewayHttpReadiness,
-} from "../daemon-cli/restart-health.js";
 import {
   captureTargetDatabaseSchemaContext,
   checkTargetDatabaseSchemasForContexts,
@@ -77,6 +72,10 @@ import {
   UpdateCommandAbort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
+import {
+  captureUpdateGatewayReadinessOwner,
+  observeUpdateGatewayReadiness,
+} from "./update-command-verification.js";
 
 export async function executeMutableUpdate(
   params: MutableUpdateExecutionParams,
@@ -148,6 +147,7 @@ export async function executeMutableUpdate(
   let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
   let previousSchemaVersions: OpenClawSchemaVersions | undefined;
   let previousVerified = false;
+  let observedGatewayStartupMs: number | undefined;
   let activationConfig: MutableUpdateExecutionResult["activationConfig"];
   const onConfigSnapshot: PackageInstallUpdateParams["onConfigSnapshot"] = (snapshot) => {
     activationConfig = snapshot;
@@ -400,6 +400,9 @@ export async function executeMutableUpdate(
       if (validation.status === "ok") {
         validatedConfigSnapshot = snapshot;
         candidateSchemaVersions = validation.candidateSchemaVersions;
+        observedGatewayStartupMs = validation.steps.find(
+          (step) => step.name === "candidate gateway canary" && step.exitCode === 0,
+        )?.durationMs;
       }
       return validation;
     };
@@ -479,41 +482,42 @@ export async function executeMutableUpdate(
           stateDir: resolveStateDir(env),
           config,
           env,
+          timeoutMs: params.updateStepTimeoutMs,
         })
       : undefined;
     if (
       preManagedServiceStop?.running &&
       preManagedServiceStop.serviceUpdateVerdict?.kind === "owned"
     ) {
+      const readiness = captureUpdateGatewayReadinessOwner({ opts });
+      const assertCurrent = () => {
+        readiness.assertCurrent();
+        assertUpdateCommandRecovery(opts);
+      };
       const port = await resolveUpdatedGatewayRestartPort({ config, serviceEnv: env });
       const [expectedVersion, expectedBuildId] = await Promise.all([
         readPackageVersion(params.root),
         readBuiltGatewayBuildId(params.root),
       ]);
-      const [health, readiness, servesPreviousPackage] = await Promise.all([
-        inspectGatewayRestart({
-          service: resolveGatewayService(),
-          env,
-          port,
-          expectedVersion,
-          expectedBuildId: expectedBuildId ?? undefined,
-          requirePluginHealth: false,
-        }),
-        waitForGatewayHttpReadiness({
-          config,
-          port,
-          deadlineAt: Date.now() + 3_000,
-          attempts: 1,
-          delayMs: 0,
-        }),
-        gatewayServiceCommandUsesRoot({ root: params.root, env }),
-      ]);
+      const { health, readyz } = await observeUpdateGatewayReadiness({
+        serviceEnv: env,
+        gatewayPort: port,
+        expectedVersion: expectedVersion ?? undefined,
+        expectedBuildId: expectedBuildId ?? undefined,
+        timeoutMs: params.timeoutMs,
+        observedStartupMs: observedGatewayStartupMs,
+        requireRunningService: true,
+        settle: { probes: 1 },
+        assertCurrent,
+      });
+      const servesPreviousPackage = await gatewayServiceCommandUsesRoot({ root: params.root, env });
+      assertCurrent();
       previousVerified = Boolean(
         expectedVersion &&
         servesPreviousPackage === true &&
         health.healthy &&
         health.runtime.status === "running" &&
-        readiness.readyz === 200,
+        readyz,
       );
       if (opts.run) {
         recordUpdateRunStep(
