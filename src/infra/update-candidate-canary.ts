@@ -73,22 +73,46 @@ function readValidationFailure(stdout: string): string | undefined {
   if (isRecord(result.error) && typeof result.error.message === "string") {
     return result.error.message;
   }
+  const messages: string[] = [];
   if (Array.isArray(result.findings)) {
-    const messages = result.findings
-      .filter((finding) => isRecord(finding) && finding.severity === "error")
-      .slice(0, 3)
-      .flatMap((finding) =>
-        isRecord(finding) && typeof finding.message === "string"
-          ? [
-              [finding.message, typeof finding.fixHint === "string" ? finding.fixHint : undefined]
-                .filter(Boolean)
-                .join(" "),
-            ]
-          : [],
-      );
-    return messages.length ? messages.join("\n") : undefined;
+    messages.push(
+      ...result.findings
+        .filter((finding) => isRecord(finding) && finding.severity === "error")
+        .slice(0, 3)
+        .flatMap((finding) =>
+          isRecord(finding) && typeof finding.message === "string"
+            ? [
+                [finding.message, typeof finding.fixHint === "string" ? finding.fixHint : undefined]
+                  .filter(Boolean)
+                  .join(" "),
+              ]
+            : [],
+        ),
+    );
   }
-  return undefined;
+  const registry = isRecord(result.registry) ? result.registry : undefined;
+  for (const diagnostic of [
+    ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+    ...(Array.isArray(registry?.diagnostics) ? registry.diagnostics : []),
+  ]) {
+    if (
+      isRecord(diagnostic) &&
+      diagnostic.level === "error" &&
+      typeof diagnostic.message === "string"
+    ) {
+      messages.push(diagnostic.message);
+    }
+  }
+  if (Array.isArray(result.plugins)) {
+    for (const plugin of result.plugins) {
+      if (isRecord(plugin) && plugin.status === "error" && typeof plugin.error === "string") {
+        messages.push(plugin.error);
+      }
+    }
+  }
+  return (
+    [...new Set(messages.filter((message) => message.trim()))].slice(0, 3).join("\n") || undefined
+  );
 }
 
 async function waitBounded<T>(
@@ -583,8 +607,12 @@ export async function validateUpdateCandidateCanary(params: {
       steps,
     };
   } catch (error) {
+    const failure = error instanceof Error ? error.message : String(error);
+    // Readiness errors describe the lifecycle, while the child's bounded output
+    // explains its cause. Keep that cause first for terminal and repair summaries.
+    const details = phase === "startup" || phase === "readiness" ? stepLog.slice(-3) : [];
     const summary = redactSupportString(
-      error instanceof Error ? error.message : String(error),
+      [...details, failure].join("\n"),
       { env, stateDir: params.stateDir },
       { maxLength: 1024 },
     );

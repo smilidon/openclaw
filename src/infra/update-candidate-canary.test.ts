@@ -5,7 +5,9 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { defaultRuntime } from "../runtime.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import { prepareUpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "./update-control-plane-sentinel.js";
@@ -18,6 +20,7 @@ import {
   POST_CORE_UPDATE_RESULT_PATH_ENV,
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
+import { summarizeUpdateStepFailure } from "./update-run-record.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), snapshot: vi.fn(), signal: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -158,9 +161,9 @@ describe("update candidate canary", () => {
         timeoutMs: 1_000,
       });
       expect(result).toMatchObject({ status: "error", phase: "doctor" });
-      expect(result.logTail.join("\n")).toContain("deadline exceeded");
+      expect(result.logTail.join("\n")).toContain("Checking data migrations timed out.");
       expect(result.steps.at(-1)).toMatchObject({ exitCode: 1 });
-      expect(result.steps.at(-1)?.stderrTail).toContain("deadline exceeded");
+      expect(result.steps.at(-1)?.failureSummary).toBe("Checking data migrations timed out.");
     } finally {
       clock.mockRestore();
     }
@@ -193,7 +196,7 @@ describe("update candidate canary", () => {
       expect(result, result.logTail.join("\n")).toMatchObject({ status: "ok", phase: "readiness" });
       expect(result.durationMs).toBeGreaterThanOrEqual(300_001);
       expect(result.steps).toContainEqual(
-        expect.objectContaining({ name: "candidate gateway canary", exitCode: 0 }),
+        expect.objectContaining({ name: "Checking Gateway startup", exitCode: 0 }),
       );
       expect(result.logTail.join("\n")).toContain("readyz: ready");
       await expect(fs.access(childEnv.OPENCLAW_STATE_DIR!)).rejects.toMatchObject({
@@ -288,7 +291,7 @@ describe("update candidate canary", () => {
     expect(result.status).toBe("ok");
     expect(result.steps).toContainEqual(
       expect.objectContaining({
-        name: "candidate migration rehearsal",
+        name: "Checking data migrations",
         exitCode: 86,
         advisory: expect.any(Object),
       }),
@@ -335,7 +338,7 @@ describe("update candidate canary", () => {
     if (proceeds) {
       expect(result.steps).toContainEqual(
         expect.objectContaining({
-          name: "candidate plugin resolution",
+          name: "Checking plugins",
           exitCode: 0,
           stdoutTail: 'Plugin "fixture" could not be loaded during the update preview.',
         }),
@@ -653,6 +656,9 @@ describe("update candidate canary", () => {
       });
       expect(result.status).toBe("error");
       expect(result.phase).toBe(failure);
+      if (failure === "plugins") {
+        expect(result.steps.at(-1)?.failureSummary).toBe("incompatible plugin");
+      }
       if (failure === "readiness") {
         expect(result.steps.at(-1)?.name).toBe("Checking Gateway startup");
       }
@@ -672,6 +678,89 @@ describe("update candidate canary", () => {
       });
     },
   );
+
+  it.each([
+    { diagnostics: [{ level: "error", message: "incompatible plugin" }] },
+    { registry: { diagnostics: [{ level: "error", message: "incompatible plugin" }] } },
+    { plugins: [{ id: "fixture", status: "error", error: "incompatible plugin" }] },
+  ])(
+    "carries structured plugin failures through progress and repair summaries (%j)",
+    async (inventory) => {
+      const baseSpawn = mocks.spawn.getMockImplementation()!;
+      mocks.spawn.mockImplementation((command, args: string[], options) => {
+        if (!args.includes("plugins")) {
+          return baseSpawn(command, args, options);
+        }
+        const child = new FakeChild(nextPid++);
+        queueMicrotask(() => {
+          child.stdout.write(JSON.stringify({ plugins: [], ...inventory }));
+          child.emit("close", 1);
+        });
+        return child;
+      });
+      const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+      const presentation = createUpdateProgress(true);
+      try {
+        const result = await validateUpdateCandidateCanary({
+          root,
+          stateDir: root,
+          config: {},
+          env: {},
+          timeoutMs: 3000,
+          onStep: (step) => presentation.progress.onStepComplete?.({ ...step, index: 0, total: 0 }),
+        });
+        const failed = result.steps.at(-1)!;
+        expect(result.status).toBe("error");
+        expect(failed.failureSummary).toBe("incompatible plugin");
+        expect(log.mock.calls.flat().join("\n")).toContain("incompatible plugin");
+        expect(summarizeUpdateStepFailure(failed)).toContain("incompatible plugin");
+      } finally {
+        presentation.dispose();
+        log.mockRestore();
+      }
+    },
+  );
+
+  it("distinguishes Gateway startup failures in progress and repair summaries", async () => {
+    let cause = "Gateway bind failed: address already in use";
+    const baseSpawn = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((command, args: string[], options) => {
+      if (!args.includes("gateway")) {
+        return baseSpawn(command, args, options);
+      }
+      const child = new FakeChild(nextPid++);
+      queueMicrotask(() => {
+        child.stderr.write(cause);
+        child.emit("close", 1);
+      });
+      return child;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("listener unavailable")));
+    const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+    const presentation = createUpdateProgress(true);
+    try {
+      for (const diagnostic of [cause, "Gateway database could not be opened: permission denied"]) {
+        cause = diagnostic;
+        const result = await validateUpdateCandidateCanary({
+          root,
+          stateDir: root,
+          config: {},
+          env: {},
+          timeoutMs: 3000,
+          onStep: (step) => presentation.progress.onStepComplete?.({ ...step, index: 0, total: 0 }),
+        });
+        expect(result.status).toBe("error");
+        expect(summarizeUpdateStepFailure(result.steps.at(-1)!)).toContain(diagnostic);
+      }
+      const output = log.mock.calls.flat().join("\n");
+      expect(output).toContain("address already in use");
+      expect(output).toContain("permission denied");
+      expect(output).not.toContain("same failure");
+    } finally {
+      presentation.dispose();
+      log.mockRestore();
+    }
+  });
 
   it("reports the health failure without replaying earlier migration output", async () => {
     const cause =
