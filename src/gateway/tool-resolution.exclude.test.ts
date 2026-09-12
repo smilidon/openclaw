@@ -350,9 +350,20 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
   });
 
   it("keeps owner-only core tools visible only for owner loopback callers", () => {
+    const availableTools = [
+      "read",
+      "sessions_spawn",
+      "automations",
+      "gateway",
+      "plugins",
+      "nodes",
+    ].map(hoisted.makeTool);
+    hoisted.createOpenClawToolsMock
+      .mockReturnValueOnce(availableTools)
+      .mockReturnValueOnce(availableTools);
     const ownerResult = resolveGatewayScopedTools({
       cfg: {
-        gateway: { tools: { allow: ["gateway"] } },
+        gateway: { tools: { allow: ["gateway", "plugins"] } },
       } as OpenClawConfig,
       sessionKey: "agent:main:direct:test",
       surface: "loopback",
@@ -360,7 +371,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
     });
     const nonOwnerResult = resolveGatewayScopedTools({
       cfg: {
-        gateway: { tools: { allow: ["gateway"] } },
+        gateway: { tools: { allow: ["gateway", "plugins"] } },
       } as OpenClawConfig,
       sessionKey: "agent:main:direct:test",
       surface: "loopback",
@@ -372,6 +383,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       "sessions_spawn",
       "automations",
       "gateway",
+      "plugins",
       "nodes",
     ]);
     expect(nonOwnerResult.tools.map((tool) => tool.name)).toEqual(["read", "sessions_spawn"]);
@@ -379,6 +391,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
     expect(args.pluginToolDenylist).toEqual([
       "automations",
       "gateway",
+      "plugins",
       "sessions",
       "screen",
       "terminal",
@@ -394,6 +407,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
     expect(args.inheritedToolDenylist).toEqual([
       "automations",
       "gateway",
+      "plugins",
       "sessions",
       "screen",
       "terminal",
