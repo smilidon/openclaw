@@ -1280,7 +1280,6 @@ describe("scripts/test-projects changed-target routing", () => {
   it("keeps PR automation workflow edits on workflow guard tests", () => {
     for (const workflowPath of [
       ".github/workflows/auto-response.yml",
-      ".github/workflows/clawsweeper-dispatch.yml",
       ".github/workflows/labeler.yml",
       ".github/workflows/real-behavior-proof.yml",
       ".github/workflows/stale.yml",
@@ -1296,6 +1295,10 @@ describe("scripts/test-projects changed-target routing", () => {
           : ["test/scripts/ci-workflow-guards.test.ts"],
       );
     }
+    expectChangedTargets(
+      [".github/workflows/clawsweeper-dispatch.yml"],
+      ["test/scripts/ci-workflow-guards.test.ts", "test/scripts/clawsweeper-dispatch.test.ts"],
+    );
   });
 
   it("keeps security-sensitive guard workflow edits on guard workflow tests", () => {
