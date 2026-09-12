@@ -31,6 +31,14 @@ function observeConnections() {
   return databases;
 }
 
+function firstConnection(databases: ReadonlySet<DatabaseSync>) {
+  const database = databases.values().next().value;
+  if (!database) {
+    throw new Error("Coordinator did not open a connection");
+  }
+  return database;
+}
+
 function fixture() {
   const directory = tempDirs.make("openclaw-coordinator-idle-");
   const location = path.join(directory, "coordinator.sqlite");
@@ -86,7 +94,7 @@ describe("idle SQLite coordinator connections", () => {
     const databases = observeConnections();
     const warm = acquireStateDatabaseCoordinator({ ...params, busyTimeoutMs: 25 });
     warm.release();
-    const [database] = databases;
+    const database = firstConnection(databases);
     expect(database.isOpen).toBe(true);
     expect(database.isTransaction).toBe(false);
     const releasePeer = await holdPeer(location);
@@ -108,7 +116,7 @@ describe("idle SQLite coordinator connections", () => {
     tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
     const oldExpiry = timer.mock.calls.at(-1)?.[0];
     const active = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const [database] = databases;
+    const database = firstConnection(databases);
     if (typeof oldExpiry !== "function") {
       throw new Error("idle expiry was not scheduled");
     }
@@ -149,7 +157,7 @@ describe("idle SQLite coordinator connections", () => {
     const databases = observeConnections();
     const { location } = fixture();
     const held = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const [activeDatabase] = databases;
+    const activeDatabase = firstConnection(databases);
     for (let index = 0; index < 20; index++) {
       tryAcquireExclusiveSqliteCoordinator(fixture().location, { keepAlive: true })?.release();
     }
@@ -230,7 +238,7 @@ describe("idle SQLite coordinator connections", () => {
       const databases = observeConnections();
       fs.chmodSync(location, 0o600);
       tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
-      const [previous] = databases;
+      const previous = firstConnection(databases);
       fs.chmodSync(location, 0o640);
       tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
       expect(previous.isOpen).toBe(false);
@@ -254,7 +262,7 @@ describe("idle SQLite coordinator connections", () => {
     const { location } = fixture();
     const databases = observeConnections();
     const lease = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const [database] = databases;
+    const database = firstConnection(databases);
     const exec = database.exec.bind(database);
     const rollback = vi.spyOn(database, "exec").mockImplementation((sql) => {
       if (sql === "ROLLBACK") {
@@ -270,7 +278,7 @@ describe("idle SQLite coordinator connections", () => {
     expect(database.isOpen).toBe(false);
     const replacements = observeConnections();
     const next = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const [replacement] = replacements;
+    const replacement = firstConnection(replacements);
     expect(replacement === database).toBe(false);
     expect(replacement.isTransaction).toBe(true);
     next?.release();
@@ -281,7 +289,7 @@ describe("idle SQLite coordinator connections", () => {
     const existingExitListeners = new Set(process.listeners("exit"));
     const databases = observeConnections();
     tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
-    const [database] = databases;
+    const database = firstConnection(databases);
     const exitClose = process
       .listeners("exit")
       .find((listener) => !existingExitListeners.has(listener));
