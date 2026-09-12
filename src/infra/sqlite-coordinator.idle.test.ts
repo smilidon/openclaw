@@ -104,7 +104,9 @@ describe("idle SQLite coordinator connections", () => {
     expect(database.prepare("PRAGMA busy_timeout").get()).toEqual({ timeout: 0 });
     expect(database.isTransaction).toBe(true);
     next.release();
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(30 * 60_000 - 1);
+    expect(database.isOpen).toBe(true);
+    vi.advanceTimersByTime(1);
     expect(database.isOpen).toBe(false);
     fs.unlinkSync(location);
   });
@@ -126,7 +128,7 @@ describe("idle SQLite coordinator connections", () => {
     active?.release();
     oldExpiry();
     expect(database.isOpen).toBe(true);
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(30 * 60_000);
     expect(database.isOpen).toBe(false);
   });
 
@@ -165,7 +167,7 @@ describe("idle SQLite coordinator connections", () => {
     expect(activeDatabase.isTransaction).toBe(true);
     held?.release();
     expect([...databases].filter((database) => database.isOpen)).toHaveLength(16);
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(30 * 60_000);
     expect([...databases].some((database) => database.isOpen)).toBe(false);
   });
 
@@ -298,7 +300,7 @@ describe("idle SQLite coordinator connections", () => {
       throw new Error("native close failed");
     });
     const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
-    vi.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(30 * 60_000);
     expect(warning).toHaveBeenCalledWith(
       expect.objectContaining({ message: "Idle SQLite coordinator close failed" }),
     );

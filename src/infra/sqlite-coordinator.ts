@@ -95,7 +95,7 @@ export function ensurePrivateSqliteCoordinatorDirectory(
   }
 }
 
-const IDLE_COORDINATOR_TIMEOUT_MS = 60_000;
+const IDLE_COORDINATOR_TIMEOUT_MS = 30 * 60_000;
 const MAX_IDLE_COORDINATORS = 16;
 // Bootstrap imports this owner before turns. Idle timers must not retain the
 // request context that released a coordinator.
