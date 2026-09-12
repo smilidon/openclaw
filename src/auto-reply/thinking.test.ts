@@ -395,21 +395,24 @@ describe("listThinkingLevels", () => {
     ).toBe("max");
   });
 
-  it("passes catalog compat into provider thinking profiles", () => {
-    const catalog = mockQwenThinkingCatalog("Qwen/Qwen3-8B");
+  it.each(["Qwen/Qwen3-8B", "vllm/Qwen/Qwen3-8B"])(
+    "passes catalog compat from %s into provider thinking profiles",
+    (id) => {
+      const catalog = mockQwenThinkingCatalog(id);
 
-    expect(listThinkingLevelLabels("vllm", "Qwen/Qwen3-8B", catalog)).toEqual(["off", "on"]);
-    for (const level of ["high", "adaptive"] as const) {
-      expect(
-        resolveSupportedThinkingLevel({
-          provider: "vllm",
-          model: "Qwen/Qwen3-8B",
-          level,
-          catalog,
-        }),
-      ).toBe("low");
-    }
-  });
+      expect(listThinkingLevelLabels("vllm", "Qwen/Qwen3-8B", catalog)).toEqual(["off", "on"]);
+      for (const level of ["high", "adaptive"] as const) {
+        expect(
+          resolveSupportedThinkingLevel({
+            provider: "vllm",
+            model: "Qwen/Qwen3-8B",
+            level,
+            catalog,
+          }),
+        ).toBe("low");
+      }
+    },
+  );
 
   it("uses canonical Fable params when no provider thinking profile exists", () => {
     const catalog = [
@@ -710,20 +713,6 @@ describe("listThinkingLevels", () => {
       "max",
       "ultra",
     ]);
-  });
-
-  it("matches provider-qualified catalog ids for provider thinking profiles", () => {
-    const catalog = mockQwenThinkingCatalog("vllm/Qwen/Qwen3-8B");
-
-    expect(listThinkingLevelLabels("vllm", "Qwen/Qwen3-8B", catalog)).toEqual(["off", "on"]);
-    expect(
-      resolveSupportedThinkingLevel({
-        provider: "vllm",
-        model: "Qwen/Qwen3-8B",
-        level: "high",
-        catalog,
-      }),
-    ).toBe("low");
   });
 
   it("uses catalog compat reasoning efforts to expose xhigh for configured custom models", () => {
