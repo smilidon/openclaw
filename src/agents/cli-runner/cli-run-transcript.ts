@@ -422,6 +422,7 @@ export async function finalizeCliContextEngineTurn(params: {
       runMaintenance: async (maintenanceParams) =>
         await runHarnessContextEngineMaintenance({
           ...maintenanceParams,
+          onDeferredMaintenance: context.deferContextEngineDisposalUntil,
           withSessionManagerRewriteLock: async (operation) => await operation(),
         }),
       warn: (message) => log.warn(message),
