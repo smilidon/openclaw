@@ -135,6 +135,8 @@ USER.md
 .agents/skills/**/*.orig
 .agents/skills/**/__pycache__/
 .agents/skills/**/*.py[cod]
+# Vendored archify skill ships its CLI in bin/; re-include it despite the global bin/ rule.
+!.agents/skills/archify/bin/
 
 # Agent credentials and memory (NEVER COMMIT)
 /memory/
@@ -151,6 +153,8 @@ package-lock.json
 # (worktrees, settings.local.json) ignored.
 !.claude/settings.json
 !.claude/skills
+# graft hook shims referenced by .claude/settings.json
+!.claude/helpers
 .agent/
 skills-lock.json
 
@@ -237,3 +241,6 @@ extensions/discord/assets/embedded-app-sdk.mjs
 
 # Pinned Swift lint/format tools installed by scripts/install-swift-tools.sh
 .build/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
