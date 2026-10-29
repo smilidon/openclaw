@@ -113,6 +113,13 @@ export function createSessionObserverCompletion(params: {
             abortSignal: controller.signal,
             answerTokenBudget: 300,
             streamParams: { temperature: 0.2 },
+            classifyResult: ({ result: candidate }) =>
+              normalizeSessionObserverModelOutput(candidate.text)
+                ? undefined
+                : {
+                    message: "Session observer utility model returned an invalid digest.",
+                    reason: "format",
+                  },
           });
           const parsed = normalizeSessionObserverModelOutput(result.text);
           if (parsed) {

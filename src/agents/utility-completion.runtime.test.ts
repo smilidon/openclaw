@@ -287,6 +287,31 @@ it("resolves fallback aliases and keeps credentials and main-model fallbacks ind
   ]);
 });
 
+it("continues the utility chain when a typed consumer rejects a successful response", async () => {
+  complete
+    .mockResolvedValueOnce({ ...answer, text: "We need to produce JSON" })
+    .mockResolvedValue(answer);
+  const classifyResult = vi.fn(({ result }: { result: typeof answer }) =>
+    result.text === answer.text
+      ? undefined
+      : { message: "Invalid digest", reason: "format" as const },
+  );
+  await expect(run({ classifyResult })).resolves.toEqual(answer);
+  expect(complete.mock.calls.map(([call]) => call.model)).toEqual(["small", "backup"]);
+  expect(classifyResult).toHaveBeenCalledTimes(2);
+  expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("classifyResult");
+});
+
+it("rejects an exhausted chain of malformed utility answers", async () => {
+  complete.mockResolvedValue({ ...answer, text: "not JSON" });
+  await expect(
+    run({
+      classifyResult: () => ({ message: "Invalid digest", reason: "format" }),
+    }),
+  ).rejects.toThrow("Invalid digest");
+  expect(complete).toHaveBeenCalledTimes(3);
+});
+
 it("preserves operator model restrictions for utility fallbacks", async () => {
   failThenAnswer("rate_limit");
   const authority = createAdmittedRunOperatorAuthority({

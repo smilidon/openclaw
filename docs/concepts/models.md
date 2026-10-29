@@ -78,7 +78,9 @@ Full key reference, defaults, and JSON5 examples: [Configuration reference](/gat
 If repeated utility-model failures stop session-observer assessments, the watching
 Control UI chat shows one warning for that run, naming the model and suggesting a
 capable utility model or `utilityModel.fallbacks`. The explicit route stays selected;
-the next run tries it again. Model-free activity headlines remain available.
+the next run tries it again. Model-free activity headlines remain available. When utility
+fallbacks are configured, malformed observer digests also advance the fallback
+chain instead of treating a non-JSON answer as a successful assessment.
 
 Title generation requests thinking off where supported. Custom OpenAI-compatible
 endpoints with an inferred Z.AI (`zai`) thinking format keep the provider's default

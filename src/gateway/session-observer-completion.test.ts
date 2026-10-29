@@ -177,6 +177,24 @@ it("reports a redacted, collapsed, bounded prefix of the last of two rejected re
   expect(completeModel).toHaveBeenCalledTimes(2);
 });
 
+it("classifies malformed utility answers before fallback success", async () => {
+  const reply = modelMessage({ headline: "Working", health: "on-track" });
+  const completeModel = vi.fn<typeof defaultCompleteModel>().mockResolvedValue(reply);
+  const request = createSessionObserverCompletion({
+    getConfig: () => ({}),
+    prepareModel: vi.fn(async () => preparedModel()),
+    completeModel,
+    isCurrent: () => true,
+  });
+  await request(observerState(), []);
+  const classify = completeModel.mock.calls[0]?.[0].classifyResult;
+  const attempt = { provider: "fixture", model: "small", attempt: 1, total: 2 };
+  expect(await classify?.({ ...attempt, result: reply })).toBeUndefined();
+  expect(
+    await classify?.({ ...attempt, result: { ...reply, text: "We need to produce JSON" } }),
+  ).toMatchObject({ reason: "format" });
+});
+
 it("publishes a digest from a utility model that answers after 15s", async () => {
   const completeModel = completionAfter(15_000);
   const harness = createHarness({ completeModel });
